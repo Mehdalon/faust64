@@ -82,7 +82,8 @@ started 14 M-cycles earlier or 16 later than it does and still lost nothing;
 
 The sound has been checked by `gb/simulate.py` / `gb/simv.py` (a model of the
 Game Boy CPU runs the ROM's real player and compares the sound with the Faust
-render; timing exact), not yet by recording an emulator's output.
+render; timing exact) and listened to in SameBoy (2026-10-02: plays correctly);
+not yet recorded and measured from an emulator.
 
 The sound uses the master volume register as a 3-bit sample output - a trick
 that needs an emulator with an accurate sound chip. If a ROM is silent or

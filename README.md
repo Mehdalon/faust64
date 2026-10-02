@@ -27,8 +27,8 @@ The ZX and Game Boy ROMs are checked without the hardware: `zx/simulate.py`,
 `gb/simulate.py` and `gb/simv.py` run the players' exact timing and compare the
 result with the Faust renders (for the pictures: every screen line). The Game Boy
 ROMs run in SameBoy (pictures checked there, including how much timing margin the
-picture copy has); their sound has been checked by simulation, not yet by
-recording an emulator, and nothing has run on real hardware - try it and tell us.
+picture copy has; the sound listened to there and checked by simulation). Nothing
+has run on real hardware yet - try it and tell us.
 
 **Faust version.** The examples here work with any recent Faust (checked: identical
 output with upstream 2.90 and with our fork). Our fork, branch `faust64` of
