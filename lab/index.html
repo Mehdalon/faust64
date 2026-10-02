@@ -1,0 +1,214 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>faust64 audio lab</title>
+<style>
+  :root { --bg:#12141a; --fg:#e6e8ef; --dim:#8b90a0; --line:#282c38; --acc:#7fd1b9; --warn:#e8a54b; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 ui-monospace,SFMono-Regular,Menlo,monospace; }
+  header { padding:14px 20px; border-bottom:1px solid var(--line); display:flex; gap:16px; align-items:center; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; font-weight:600; letter-spacing:.04em; }
+  .muted { color:var(--dim); }
+  main { display:grid; grid-template-columns:minmax(0,1fr) 300px; gap:0; min-height:calc(100vh - 56px); }
+  @media (max-width:820px){ main{grid-template-columns:1fr} }
+  section { padding:20px; }
+  aside { padding:20px; border-left:1px solid var(--line); }
+  @media (max-width:820px){ aside{border-left:0;border-top:1px solid var(--line)} }
+  select, input[type=number], button { background:#1b1e27; color:var(--fg); border:1px solid var(--line);
+    border-radius:6px; padding:6px 10px; font:inherit; }
+  button { cursor:pointer; }
+  button:hover { border-color:var(--acc); }
+  button.primary { background:var(--acc); color:#10131a; border-color:var(--acc); font-weight:600; }
+  button[disabled] { opacity:.5; cursor:default; }
+  .ctrl { margin-bottom:14px; }
+  .ctrl .row { display:flex; justify-content:space-between; align-items:baseline; gap:10px; }
+  .ctrl label { color:var(--acc); }
+  .ctrl .val { font-variant-numeric:tabular-nums; }
+  input[type=range] { width:100%; accent-color:var(--acc); margin:4px 0 0; }
+  .sw { font-size:12px; color:var(--dim); display:flex; gap:6px; align-items:center; margin-top:2px; }
+  .sw input[type=number] { width:74px; padding:2px 6px; font-size:12px; }
+  pre { white-space:pre-wrap; background:#1b1e27; border:1px solid var(--line); border-radius:6px;
+        padding:10px; color:var(--dim); font-size:12px; margin:10px 0 0; }
+  pre.err { color:var(--warn); }
+  audio { width:100%; margin-top:14px; }
+  .note { font-size:12px; color:var(--dim); border-top:1px solid var(--line); margin-top:18px; padding-top:12px; }
+  .bar { display:flex; gap:8px; flex-wrap:wrap; margin-top:16px; }
+</style>
+
+<header>
+  <h1>faust64 audio lab</h1>
+  <select id="dsp"></select>
+  <span class="muted">rate</span>
+  <select id="sr">
+    <option>16000</option><option selected>22050</option><option>32000</option><option>44100</option>
+  </select>
+  <span class="muted">seconds</span>
+  <input type="number" id="secs" value="6" min="1" max="60" style="width:70px">
+  <span class="muted" id="status"></span>
+</header>
+
+<main>
+  <section>
+    <div id="controls"><p class="muted">loading…</p></div>
+    <div class="bar">
+      <button class="primary" id="play">render &amp; play</button>
+      <button id="reset">reset controls</button>
+      <button id="rom">build .z64</button>
+      <input type="text" id="pname" placeholder="preset name" style="width:130px">
+      <button id="savep">save preset</button>
+    </div>
+    <audio id="audio" controls></audio>
+    <pre id="out">ready.</pre>
+    <p class="note">
+      Rendered through the same signal path as <code>arch/n64.c</code> — float compute,
+      clamp, ×32000, 16-bit stereo — at the rate selected above. What you hear is what
+      the ROM plays, to within one LSB of FPU rounding.
+      Tick <em>sweep</em> on a control to move it linearly across the render.
+    </p>
+  </section>
+
+  <aside>
+    <div class="muted">DSP source</div>
+    <pre id="src" style="max-height:70vh;overflow:auto"></pre>
+  </aside>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const state = { controls: [], sweeps: {} };
+
+async function api(path, opts) {
+  const r = await fetch(path, opts);
+  return r.json();
+}
+function setStatus(t) { $('#status').textContent = t; }
+function show(msg, isErr) {
+  const p = $('#out'); p.textContent = msg; p.className = isErr ? 'err' : '';
+}
+
+async function loadDsps() {
+  const { dsps } = await api('/api/dsps');
+  $('#dsp').innerHTML = dsps.map(d => `<option>${d}</option>`).join('');
+  if (dsps.length) loadControls();
+  else show('no .dsp files found in the project', true);
+}
+
+async function loadControls() {
+  const dsp = $('#dsp').value;
+  setStatus('reading…');
+  state.sweeps = {};
+  api('/api/source?dsp=' + encodeURIComponent(dsp))
+    .then(s => { $('#src').textContent = s.src || s.error || ''; });
+  const r = await api('/api/controls?dsp=' + encodeURIComponent(dsp));
+  setStatus('');
+  if (r.error) { $('#controls').innerHTML = ''; return show(r.error, true); }
+  state.controls = r.controls;
+  renderControls();
+  show('ready.');
+}
+
+function renderControls() {
+  if (!state.controls.length) {
+    $('#controls').innerHTML = '<p class="muted">this DSP has no controls</p>';
+    return;
+  }
+  $('#controls').innerHTML = state.controls.map((c, i) => `
+    <div class="ctrl">
+      <div class="row">
+        <label for="c${i}">${c.name}</label>
+        <span class="val" id="v${i}">${c.value}</span>
+      </div>
+      <input type="range" id="c${i}" min="${c.lo}" max="${c.hi}" step="${c.step}" value="${c.value}">
+      <div class="sw">
+        <input type="checkbox" id="s${i}"><label for="s${i}">sweep</label>
+        <input type="number" id="sl${i}" value="${c.lo}" step="${c.step}" disabled>
+        <span>→</span>
+        <input type="number" id="sh${i}" value="${c.hi}" step="${c.step}" disabled>
+      </div>
+    </div>`).join('');
+
+  state.controls.forEach((c, i) => {
+    $('#c' + i).addEventListener('input', e => {
+      c.value = parseFloat(e.target.value);
+      $('#v' + i).textContent = c.value;
+    });
+    $('#s' + i).addEventListener('change', e => {
+      const on = e.target.checked;
+      $('#sl' + i).disabled = !on; $('#sh' + i).disabled = !on;
+      $('#c' + i).disabled = on;
+      if (on) state.sweeps[c.name] = i; else delete state.sweeps[c.name];
+    });
+  });
+}
+
+function payload() {
+  const params = {}, sweeps = {};
+  state.controls.forEach((c, i) => {
+    if (c.name in state.sweeps) {
+      sweeps[c.name] = [parseFloat($('#sl' + i).value), parseFloat($('#sh' + i).value)];
+    } else {
+      params[c.name] = c.value;
+    }
+  });
+  return {
+    dsp: $('#dsp').value,
+    sr: parseInt($('#sr').value, 10),
+    secs: parseFloat($('#secs').value),
+    params, sweeps
+  };
+}
+
+async function doRender(play) {
+  setStatus('rendering…'); $('#play').disabled = true;
+  const r = await api('/api/render', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload())
+  });
+  setStatus(''); $('#play').disabled = false;
+  if (r.error) return show(r.error, true);
+  show(r.stats || 'rendered.');
+  $('#audio').src = r.url;
+  if (play) $('#audio').play();
+}
+
+$('#dsp').addEventListener('change', loadControls);
+$('#play').addEventListener('click', () => doRender(true));
+$('#reset').addEventListener('click', () => {
+  state.controls.forEach(c => c.value = c.init);
+  state.sweeps = {};
+  renderControls();
+});
+$('#savep').addEventListener('click', async () => {
+  const name = $('#pname').value.trim();
+  if (!name) return show('give the preset a name first', true);
+  const body = payload();
+  // a swept control has no single value, so fold sweeps back to their midpoint
+  Object.keys(body.sweeps || {}).forEach(k => {
+    const [a, b] = body.sweeps[k];
+    body.params[k] = (a + b) / 2;
+  });
+  delete body.sweeps;
+  body.name = name;
+  const r = await api('/api/preset', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (r.error) return show(r.error, true);
+  show('saved "' + r.saved + '" to synth/presets.json for engine ' + r.engine +
+       ' (' + r.count + ' total)' +
+       '\nto put them in a ROM, write the values into the .dsp as its defaults');
+});
+
+$('#rom').addEventListener('click', async () => {
+  setStatus('building ROM…'); $('#rom').disabled = true;
+  const r = await api('/api/rom', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(payload())
+  });
+  setStatus(''); $('#rom').disabled = false;
+  if (r.error) return show(r.error, true);
+  show(r.log + '\n\nNote: control positions are NOT baked into the ROM — the ROM always\n' +
+       'starts at the DSP\'s own defaults. Edit the .dsp to change them.');
+});
+
+loadDsps();
+</script>

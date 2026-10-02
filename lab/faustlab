@@ -1,0 +1,86 @@
+#!/usr/bin/env bash
+# faustlab - hear a Faust DSP the way the N64 will play it, without building a ROM.
+#
+#   lab/faustlab examples/bass.dsp
+#   lab/faustlab -d 12 -p freq=41 -p cutoff=400 examples/bass.dsp
+#   lab/faustlab -s cutoff=200:4000 examples/bass.dsp      # sweep across the render
+#   lab/faustlab -l examples/bass.dsp                      # just list the controls
+#
+# Renders through the SAME path as arch/n64.c (float compute -> clamp ->
+# x32000 -> int16 stereo) at the SAME default rate, so the audition is honest.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# Which faust? Homebrew's aborts on startup here (its LLVM wants libz3.4.16,
+# which brew cleanup removed, and Homebrew refuses to rebuild LLVM on this
+# machine - "Tier 3 configuration"). Fall back to the locally built compiler.
+FAUST="${FAUST:-faust}"
+( "$FAUST" --version >/dev/null 2>&1 ) 2>/dev/null || { echo "$(basename "$0"): no working faust" >&2; exit 1; }
+
+
+SR=22050
+SECS=8
+OUT=""
+PLAY=1
+LISTONLY=0
+PARAMS=()
+
+usage() {
+    cat >&2 <<'U'
+usage: faustlab [options] file.dsp
+  -r RATE      sample rate, match your ROM     (default: 22050)
+  -d SECONDS   render length                   (default: 8)
+  -p NAME=VAL  set a control (repeatable)
+  -s NAME=LO:HI  sweep a control across the render (repeatable)
+  -o FILE      keep the wav here               (default: a temp file)
+  -n           render only, do not play
+  -l           list the DSP's controls and exit
+U
+    exit 2
+}
+
+while getopts ":r:d:p:s:o:nlh" opt; do
+    case "$opt" in
+        r) SR="$OPTARG" ;;
+        d) SECS="$OPTARG" ;;
+        p) PARAMS+=("$OPTARG") ;;
+        s) PARAMS+=("$OPTARG") ;;
+        o) OUT="$OPTARG" ;;
+        n) PLAY=0 ;;
+        l) LISTONLY=1 ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 1 ] || usage
+DSP="$1"
+[ -f "$DSP" ] || { echo "faustlab: no such file: $DSP" >&2; exit 1; }
+command -v "$FAUST" >/dev/null || { echo "faustlab: faust compiler not found ($FAUST); install Faust or set FAUST=/path/to/faust" >&2; exit 1; }
+
+BASE="$(basename "$DSP" .dsp)"
+IDENT="$(printf '%s' "$BASE" | tr -c 'A-Za-z0-9_' '_')"
+case "$IDENT" in [0-9]*) IDENT="d$IDENT" ;; esac
+WORK="$HERE/build/lab-$IDENT"
+FAUSTINC="$("$FAUST" --includedir 2>/dev/null || echo /usr/local/include)"
+[ -d "$FAUSTINC/faust" ] || FAUSTINC=/usr/local/include
+
+mkdir -p "$WORK"
+# -ftz 1 to match what faust2n64 builds, so the audition is of the same code
+"$FAUST" -lang c -ftz 1 -cn "$IDENT" -o "$WORK/gen.c" "$DSP"
+cc -O2 -std=gnu11 -I"$FAUSTINC" -I"$WORK" -DLAB_SR="$SR" \
+   -o "$WORK/render" "$HERE/tools/host_render.c" -lm
+
+if [ "$LISTONLY" -eq 1 ]; then
+    # a 64-sample render is the cheapest way to make it enumerate the controls
+    "$WORK/render" "$WORK/probe.wav" 0.001 2>&1 >/dev/null | head -1
+    rm -f "$WORK/probe.wav"
+    exit 0
+fi
+
+[ -n "$OUT" ] || OUT="$WORK/$IDENT.wav"
+mkdir -p "$(dirname "$OUT")"
+"$WORK/render" "$OUT" "$SECS" ${PARAMS[@]+"${PARAMS[@]}"}
+echo "faustlab: $OUT  (${SR} Hz, ${SECS}s, N64 signal path)"
+[ "$PLAY" -eq 1 ] && exec afplay "$OUT"
+exit 0

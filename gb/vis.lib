@@ -1,0 +1,19 @@
+// vis.lib - for Game Boy picture programs (faust2gb -v pic.dsp music.dsp).
+//
+// A picture program is an ordinary Faust program whose samples are PIXELS:
+// one sample per pixel, row by row, 128 x 88 per picture, 29.86 pictures a
+// second. Its first output is the brightness, 0 (black) .. 1 (white).
+// faust2gb turns that into the Game Boy's 4 shades: values already on the
+// 4 levels (0, 1/3, 2/3, 1) are kept exactly; anything else gets a 4x4 ordered
+// dither (the Game Boy look).
+// In the .dsp, @FW@, @FH@ and @FPS@ are replaced by 128, 88 and 29.8638.
+
+// pixel index 0 .. n-1, over and over (a copy of daw.lib's, so this folder stands alone)
+dw_scan(n) = (\(p).(ba.if(p >= n - 1, 0, p + 1)) ~ _) : mem;
+// pictures so far
+dw_frames(n, period) = (\(f).(ba.if(wrap, ba.if(f >= period - 1, 0, f + 1), f)) ~ _)
+  with { wrap = (dw_scan(n) == n - 1); };
+
+// the usual coordinates for a W x H picture shown at fps: x, y (pixels) and t (seconds)
+gb_xyt(W, H, fps) = float(i % W), float(int(i / W)), float(dw_frames(W * H, 1000000)) / fps
+  with { i = dw_scan(W * H); };

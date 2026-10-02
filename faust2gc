@@ -1,0 +1,128 @@
+#!/usr/bin/env bash
+# faust2gc - compile a Faust DSP into a Nintendo GameCube (or Wii) executable.
+#
+#   ./faust2gc examples/bass.dsp              -> bass.dol   (GameCube)
+#   ./faust2gc --wii examples/bass.dsp        -> bass.dol   (Wii)
+#
+# Works for the same reason the N64 does: PowerPC has a hardware FPU, so
+# Faust's -lang c output runs unmodified. Needs devkitPPC + libogc.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Which faust: $FAUST if set, else `faust` from PATH.
+FAUST="${FAUST:-faust}"
+( "$FAUST" --version >/dev/null 2>&1 ) 2>/dev/null || { echo "$(basename "$0"): no working faust" >&2; exit 1; }
+
+ARCH="$HERE/arch/ogc.c"
+
+PLATFORM=cube
+# 48000, ASND's native rate. asndlib fixes the hardware mixer at 48 kHz
+# (INIT_RATE_48000), so any other voice rate is resampled internally by the
+# library - and that resampling, not the DSP, is what made a 32000 Hz build
+# sound rough. PowerPC at 486 MHz has the headroom.
+SR=48000
+FRAMES=1024
+OUT=""
+KEEP=0
+FAUSTARGS=()
+FTZ=1
+
+usage() {
+    cat >&2 <<'U'
+usage: faust2gc [options] file.dsp
+  --wii        build for Wii instead of GameCube
+  -o FILE      output .dol path        (default: <name>.dol next to the .dsp)
+  -r RATE      sample rate             (default: 48000 = ASND native, no resampling)
+  -f FRAMES    frames per block        (default: 1024)
+  -k           keep the build directory
+  -F           do not flush denormals to zero
+  -X ARG       pass ARG through to faust (repeatable)
+U
+    exit 2
+}
+
+ARGS=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        --wii) PLATFORM=wii; shift ;;
+        -o) OUT="$2"; shift 2 ;;
+        -r) SR="$2"; shift 2 ;;
+        -f) FRAMES="$2"; shift 2 ;;
+        -k) KEEP=1; shift ;;
+        -F) FTZ=0; shift ;;
+        -X) FAUSTARGS+=("$2"); shift 2 ;;
+        -h|--help) usage ;;
+        -*) usage ;;
+        *) ARGS+=("$1"); shift ;;
+    esac
+done
+[ "${#ARGS[@]}" -eq 1 ] || usage
+DSP="${ARGS[0]}"
+[ -f "$DSP" ] || { echo "faust2gc: no such file: $DSP" >&2; exit 1; }
+
+command -v "$FAUST" >/dev/null || { echo "faust2gc: faust compiler not found ($FAUST); install Faust or set FAUST=/path/to/faust" >&2; exit 1; }
+: "${DEVKITPRO:=/opt/devkitpro}"
+: "${DEVKITPPC:=$DEVKITPRO/devkitPPC}"
+export DEVKITPRO DEVKITPPC
+RULES="gamecube_rules"; [ "$PLATFORM" = wii ] && RULES="wii_rules"
+[ -f "$DEVKITPPC/$RULES" ] || {
+    echo "faust2gc: no devkitPPC at $DEVKITPPC (expected $RULES)" >&2
+    exit 1; }
+
+FAUSTINC="$("$FAUST" --includedir 2>/dev/null || true)"
+[ -n "$FAUSTINC" ] && [ -d "$FAUSTINC/faust" ] || FAUSTINC=/usr/local/include
+
+BASE="$(basename "$DSP")"; BASE="${BASE%.dsp}"
+IDENT="$(printf '%s' "$BASE" | tr -c 'A-Za-z0-9_' '_')"
+case "$IDENT" in [0-9]*) IDENT="d$IDENT" ;; esac
+[ -n "$OUT" ] || OUT="$(dirname "$DSP")/$BASE.dol"
+
+BUILD="$HERE/build/gc-$IDENT"
+rm -rf "$BUILD"; mkdir -p "$BUILD"
+cp "$HERE/ui/faustui.h" "$BUILD/faustui.h"
+
+echo "faust2gc: $DSP -> $OUT   ($PLATFORM, ${SR} Hz, ${FRAMES} frames)"
+
+FTZARGS=(); [ "$FTZ" -eq 1 ] && FTZARGS=(-ftz 1)
+"$FAUST" -I "$HERE/lib" -a "$ARCH" -lang c -cn "$IDENT" "${FTZARGS[@]+"${FTZARGS[@]}"}" \
+      "${FAUSTARGS[@]+"${FAUSTARGS[@]}"}" -o "$BUILD/$IDENT.c" "$DSP"
+
+LIBS="-lasnd -logc -lm"
+MACHDEP="-DGEKKO -mrvl -mcpu=750 -meabi -mhard-float"
+LIBDIRS="$DEVKITPRO/libogc"
+LIBPATH="$LIBDIRS/lib/cube"
+if [ "$PLATFORM" = wii ]; then
+    MACHDEP="-DGEKKO -mrvl -mcpu=750 -meabi -mhard-float -DHW_RVL"
+    LIBPATH="$LIBDIRS/lib/wii"
+    LIBS="-lasnd -lwiiuse -lbte -logc -lm"
+else
+    MACHDEP="-DGEKKO -mogc -mcpu=750 -meabi -mhard-float -DHW_DOL"
+fi
+
+PREFIX="$DEVKITPPC/bin/powerpc-eabi-"
+"${PREFIX}gcc" -O2 $MACHDEP \
+    -I"$FAUSTINC" -I"$BUILD" -I"$LIBDIRS/include" \
+    -DFAUST_OGC_SR="$SR" -DFAUST_OGC_FRAMES="$FRAMES" \
+    -DFAUST_OGC_DSPNAME="\"$BASE\"" \
+    -ffast-math -Wno-unused \
+    -c "$BUILD/$IDENT.c" -o "$BUILD/$IDENT.o"
+
+"${PREFIX}gcc" $MACHDEP "$BUILD/$IDENT.o" \
+    -L"$LIBPATH" $LIBS -o "$BUILD/$IDENT.elf"
+
+"${PREFIX}objcopy" -O binary "$BUILD/$IDENT.elf" "$BUILD/$IDENT.bin" 2>/dev/null || true
+if command -v elf2dol >/dev/null; then
+    elf2dol "$BUILD/$IDENT.elf" "$BUILD/$IDENT.dol"
+elif [ -x "$DEVKITPRO/tools/bin/elf2dol" ]; then
+    "$DEVKITPRO/tools/bin/elf2dol" "$BUILD/$IDENT.elf" "$BUILD/$IDENT.dol"
+else
+    echo "faust2gc: elf2dol not found; leaving the .elf (Dolphin loads .elf too)" >&2
+    cp "$BUILD/$IDENT.elf" "$BUILD/$IDENT.dol"
+fi
+
+mkdir -p "$(dirname "$OUT")"
+cp "$BUILD/$IDENT.dol" "$OUT"
+echo "faust2gc: wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes)"
+[ "$KEEP" -eq 1 ] && echo "faust2gc: build kept in $BUILD" || rm -rf "$BUILD"
+exit 0

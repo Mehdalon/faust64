@@ -1,0 +1,11 @@
+build/
+__pycache__/
+*.wav
+*-frames.png
+demos/*.z64
+demos/*.gb
+demos/*.tap
+demos/*.dol
+game/*.z64
+gb/vis/*.gb
+synth/

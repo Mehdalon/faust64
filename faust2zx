@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+# faust2zx - compile a Faust DSP into a ZX Spectrum tape.
+#
+#   ./faust2zx demos/acid.dsp          -> acid.tap  (+ acid-preview.wav)
+#
+# The Spectrum has ONE BIT of audio - bit 4 of port 0xFE - and a 3.5 MHz Z80
+# with nothing to help it. So unlike every other target here, the DSP does not
+# run on the machine: it is rendered on the host and encoded as pulse widths,
+# and the Z80 does nothing but bang the speaker bit on a fixed 501 T-state
+# period. That is also why this target needs no fixed-point layer - the output
+# is a bit, not a number.
+#
+# The cost is length: 1 byte per sample at 6986 Hz, in 48K, is about 5 seconds.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT=""
+SECONDS_=4.0
+NAME=""
+PARAMS=()
+LOOP=""
+
+usage() {
+    cat >&2 <<'U'
+usage: faust2zx [options] file.dsp
+  -o FILE      output .tap            (default: <name>.tap next to the .dsp)
+  -d SECONDS   how much to render     (default: 4.0; 48K holds about 5.7)
+  -n NAME      tape name, <=10 chars  (default: from the file name)
+  -p NAME=VAL  set a control before rendering (repeatable)
+  -l           loop forever instead of returning to BASIC
+U
+    exit 2
+}
+while getopts ":o:d:n:p:lh" opt; do
+    case "$opt" in
+        o) OUT="$OPTARG" ;;
+        d) SECONDS_="$OPTARG" ;;
+        n) NAME="$OPTARG" ;;
+        p) PARAMS+=("$OPTARG") ;;
+        l) LOOP="--loop" ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 1 ] || usage
+DSP="$1"
+[ -f "$DSP" ] || { echo "faust2zx: no such file: $DSP" >&2; exit 1; }
+
+BASE="$(basename "$DSP" .dsp)"
+[ -n "$OUT" ] || OUT="$(dirname "$DSP")/$BASE.tap"
+[ -n "$NAME" ] || NAME="$(printf '%s' "$BASE" | cut -c1-10)"
+
+SR="$(python3 -c "import sys;sys.path.insert(0,'$HERE/zx');from encode import sample_rate;print(int(round(sample_rate())))")"
+W="$HERE/build/zx-$BASE"
+rm -rf "$W"; mkdir -p "$W"
+
+echo "faust2zx: $DSP -> $OUT   (${SR} Hz, 5-bit PWM, ${SECONDS_}s)"
+
+ARGS=()
+for kv in ${PARAMS[@]+"${PARAMS[@]}"}; do ARGS+=(-p "$kv"); done
+"$HERE/lab/faustlab" -n -r "$SR" -d "$SECONDS_" -o "$W/src.wav" \
+    ${ARGS[@]+"${ARGS[@]}"} "$DSP" >/dev/null
+
+python3 "$HERE/zx/encode.py" "$W/src.wav" "$W/pwm.bin"
+
+# 48K: the player loads at 0x8000, so about 0xBFFF-0x8021 bytes are available
+AVAIL=$(( 0xFFFF - 0x6021 ))
+SIZE=$(wc -c < "$W/pwm.bin" | tr -d ' ')
+if [ "$SIZE" -gt "$AVAIL" ]; then
+    echo "faust2zx: $SIZE bytes of samples will not fit ($AVAIL available)." >&2
+    echo "          At ${SR} Hz that is $(python3 -c "print('%.1f' % ($AVAIL/$SR))")s max on a 48K." >&2
+    exit 1
+fi
+
+python3 "$HERE/zx/mktap.py" "$W/pwm.bin" "$OUT" $LOOP
+python3 "$HERE/zx/simulate.py" "$W/pwm.bin" "$W/src.wav" "${OUT%.tap}-preview.wav"
+echo "faust2zx: wrote $OUT and ${OUT%.tap}-preview.wav"

@@ -1,0 +1,56 @@
+#!/usr/bin/env bash
+# faust2gb - compile a Faust DSP into a Game Boy ROM (.gb).
+#
+#   ./faust2gb demos/acid.dsp            -> acid.gb + acid-preview.wav
+#   ./faust2gb -d 20 -p "cutoff=900" x.dsp
+#   ./faust2gb -v gb/vis/tunnel.dsp gb/vis/chipwave.dsp   -> sound AND pictures
+#
+# Like faust2zx, the DSP does not run on the machine: a 4 MHz SM83 with no
+# multiply cannot. It is rendered on the host at 8192 Hz, encoded as 3-bit
+# master-volume PCM (gb/encode.py), and a hand-assembled player streams it from
+# an MBC5 cartridge (gb/mkgb.py). gb/simulate.py runs that player on a small
+# SM83 model and checks the result against the render.
+# With -v PIC.dsp a second Faust program draws the pictures (128 x 88, 4 shades,
+# 29.86 a second; see gb/vis.lib) and a line-locked player (gb/mkgbv.py) shows
+# them while the sound plays at one sample per screen line (9198 Hz);
+# gb/simv.py checks sound and every screen line against the renders.
+# Needs: faust and lab/faustlab (as faust2zx), a C compiler for -v. No Game Boy toolchain.
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+OUT=""; SECONDS_=10.0; TITLE=""; PARAMS=(); PIC=""
+usage() { echo "usage: faust2gb [-o out.gb] [-d seconds] [-t TITLE] [-p NAME=VAL ...] [-v pictures.dsp] file.dsp" >&2; exit 2; }
+while getopts ":o:d:t:p:v:h" opt; do
+    case "$opt" in o) OUT="$OPTARG" ;; d) SECONDS_="$OPTARG" ;; t) TITLE="$OPTARG" ;; p) PARAMS+=("$OPTARG") ;; v) PIC="$OPTARG" ;; *) usage ;; esac
+done
+shift $((OPTIND - 1)); [ $# -eq 1 ] || usage
+DSP="$1"; [ -f "$DSP" ] || { echo "faust2gb: no such file: $DSP" >&2; exit 1; }
+BASE="$(basename "$DSP" .dsp)"; [ -n "$OUT" ] || OUT="$(dirname "$DSP")/$BASE.gb"; [ -n "$TITLE" ] || TITLE="$BASE"
+W="$HERE/build/gb-$BASE"; rm -rf "$W"; mkdir -p "$W"
+ARGS=(); for kv in ${PARAMS[@]+"${PARAMS[@]}"}; do ARGS+=(-p "$kv"); done
+if [ -n "$PIC" ]; then
+    [ -f "$PIC" ] || { echo "faust2gb: no such file: $PIC" >&2; exit 1; }
+    FAUST="${FAUST:-faust}"
+    ( "$FAUST" --version >/dev/null 2>&1 ) 2>/dev/null || FAUST="${FAUST:-faust}"
+    command -v "$FAUST" >/dev/null || { echo "faust2gb: faust compiler not found ($FAUST); install Faust or set FAUST=/path/to/faust" >&2; exit 1; }
+    echo "faust2gb: $DSP + pictures $PIC -> $OUT   (9198 Hz sound, 128x88 pictures, ${SECONDS_}s)"
+    "$HERE/lab/faustlab" -n -r 9198 -d "$SECONDS_" -o "$W/src.wav" ${ARGS[@]+"${ARGS[@]}"} "$DSP" >/dev/null
+    grep -q '^// *faust2gb: *scx' "$DSP" && SCX=scx || SCX=none
+    python3 "$HERE/gb/vprep.py" "$W/src.wav" "$W/lev.bin" "$W/scx.bin" $SCX
+    NPIC=$(python3 -c "import math,sys; n=int(round($SECONDS_*9198))+3*154; print(math.ceil(math.ceil(n/154)/2))")
+    sed "s/@FW@/128/g; s/@FH@/88/g; s/@FPS@/29.8638/g" "$PIC" > "$W/pic.dsp"
+    SUB="$(sed -n 's|^// field-sub: *\([0-9]*\).*|\1|p' "$PIC" | head -1)"; SUB="${SUB:-1}"
+    "$FAUST" -I "$HERE/gb" -I "$(cd "$(dirname "$PIC")" && pwd)" -lang c -ftz 1 -cn pic -o "$W/pic.c" "$W/pic.dsp"
+    FI="$("$FAUST" --includedir 2>/dev/null || echo /usr/local/include)"
+    cc -O2 -ffast-math -w -I"$FI" -include faust/gui/CInterface.h -include "$W/pic.c" "$HERE/gb/fieldrender.c" -lm -o "$W/fieldrender"
+    "$W/fieldrender" 128 88 "$SUB" "$NPIC" "$W/pics.bin"
+    python3 "$HERE/gb/mkgbv.py" "$W/lev.bin" "$W/scx.bin" "$W/pics.bin" "$OUT" "$TITLE"
+    python3 "$HERE/gb/simv.py" "$OUT" "$W/lev.bin" "$W/scx.bin" "$W/pics.bin" 60 "${OUT%.gb}"
+    echo "faust2gb: wrote $OUT and ${OUT%.gb}-frames.png"
+    exit 0
+fi
+echo "faust2gb: $DSP -> $OUT   (8192 Hz, 3-bit master-volume PCM, ${SECONDS_}s)"
+"$HERE/lab/faustlab" -n -r 8192 -d "$SECONDS_" -o "$W/src.wav" ${ARGS[@]+"${ARGS[@]}"} "$DSP" >/dev/null
+python3 "$HERE/gb/encode.py" "$W/src.wav" "$W/pcm.bin"
+python3 "$HERE/gb/mkgb.py" "$W/pcm.bin" "$OUT" "$TITLE"
+python3 "$HERE/gb/simulate.py" "$OUT" "$W/src.wav" "${OUT%.gb}-preview.wav" 3
+echo "faust2gb: wrote $OUT and ${OUT%.gb}-preview.wav"

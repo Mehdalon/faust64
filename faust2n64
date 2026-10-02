@@ -1,0 +1,129 @@
+#!/usr/bin/env bash
+# faust2n64 - compile a Faust DSP into a Nintendo 64 ROM.
+#
+#   ./faust2n64 examples/bass.dsp            -> bass.z64
+#   ./faust2n64 -r 16000 -o out/x.z64 x.dsp
+#
+# Needs: faust (any 2.x with the C backend) and a libdragon toolchain,
+# located via $N64_INST.
+set -euo pipefail
+
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+# Which faust: $FAUST if set, else `faust` from PATH.
+FAUST="${FAUST:-faust}"
+( "$FAUST" --version >/dev/null 2>&1 ) 2>/dev/null || { echo "$(basename "$0"): no working faust" >&2; exit 1; }
+
+ARCH="$HERE/arch/n64.c"
+
+SR=22050
+BUFFERS=4
+OUT=""
+TITLE=""
+KEEP=0
+SELFTEST=0
+FAUSTARGS=()
+# Flush denormals to zero. Measured: without it the `arp` demo ran at 83% CPU
+# instead of 59%, because the VR4300 traps denormal operands into software and
+# every decaying envelope eventually produces them. -ftz 2 emits C++ syntax that
+# the C backend cannot compile, so 1 (fabs-based) is the usable mode.
+FTZ=1
+
+usage() {
+    cat >&2 <<'U'
+usage: faust2n64 [options] file.dsp
+  -o FILE      output ROM path              (default: <name>.z64 next to the .dsp)
+  -r RATE      sample rate in Hz            (default: 22050)
+  -b N         number of audio buffers      (default: 4)
+  -t TITLE     ROM header title, <=20 chars (default: derived from the file name)
+  -k           keep the generated C and build directory
+  -S           build the self-test ROM (prints a sample fingerprint, no audio)
+  -F           do NOT flush denormals to zero (slower on hardware; for A/B only)
+  -X ARG       pass ARG through to faust (repeatable), e.g. -X -vec
+U
+    exit 2
+}
+
+while getopts ":o:r:b:t:kSFX:h" opt; do
+    case "$opt" in
+        o) OUT="$OPTARG" ;;
+        r) SR="$OPTARG" ;;
+        b) BUFFERS="$OPTARG" ;;
+        t) TITLE="$OPTARG" ;;
+        k) KEEP=1 ;;
+        F) FTZ=0 ;;
+        S) SELFTEST=1 ;;
+        X) FAUSTARGS+=("$OPTARG") ;;
+        h) usage ;;
+        *) usage ;;
+    esac
+done
+shift $((OPTIND - 1))
+[ $# -eq 1 ] || usage
+DSP="$1"
+[ -f "$DSP" ] || { echo "faust2n64: no such file: $DSP" >&2; exit 1; }
+
+command -v "$FAUST" >/dev/null || { echo "faust2n64: faust compiler not found ($FAUST); install Faust or set FAUST=/path/to/faust" >&2; exit 1; }
+
+: "${N64_INST:=$HOME/n64-toolchain}"
+if [ ! -f "$N64_INST/include/n64.mk" ]; then
+    echo "faust2n64: no libdragon toolchain at N64_INST=$N64_INST" >&2
+    echo "           (expected \$N64_INST/include/n64.mk)" >&2
+    exit 1
+fi
+export N64_INST
+
+# Faust's own headers (CInterface.h). Ask faust where they are; fall back to
+# the usual prefix if this build does not answer.
+FAUSTINC="$("$FAUST" --includedir 2>/dev/null || true)"
+[ -n "$FAUSTINC" ] && [ -d "$FAUSTINC/faust" ] || FAUSTINC=/usr/local/include
+[ -f "$FAUSTINC/faust/gui/CInterface.h" ] || {
+    echo "faust2n64: CInterface.h not found under $FAUSTINC" >&2; exit 1; }
+
+BASE="$(basename "$DSP")"; BASE="${BASE%.dsp}"
+# ROM/class identifier: letters, digits and underscore only, never leading digit
+IDENT="$(printf '%s' "$BASE" | tr -c 'A-Za-z0-9_' '_')"
+case "$IDENT" in [0-9]*) IDENT="d$IDENT" ;; esac
+[ -n "$OUT" ] || OUT="$(dirname "$DSP")/$BASE.z64"
+[ -n "$TITLE" ] || TITLE="$(printf '%s' "$BASE" | cut -c1-20)"
+
+BUILD="$HERE/build/$IDENT"
+rm -rf "$BUILD"; mkdir -p "$BUILD"
+# copied, not -I'd: the project path can contain spaces, which make and gcc
+# between them will not carry through an include flag intact
+cp "$HERE/ui/faustui.h" "$BUILD/faustui.h"
+cp "$HERE/ui/faustgui.h" "$BUILD/faustgui.h"
+
+echo "faust2n64: $DSP -> $OUT   (${SR} Hz, ${BUFFERS} buffers)"
+
+FTZARGS=(); [ "$FTZ" -eq 1 ] && FTZARGS=(-ftz 1)
+"$FAUST" -I "$HERE/lib" -a "$ARCH" -lang c -cn "$IDENT" "${FTZARGS[@]+"${FTZARGS[@]}"}" "${FAUSTARGS[@]+"${FAUSTARGS[@]}"}" \
+      -o "$BUILD/$IDENT.c" "$DSP"
+
+cat > "$BUILD/Makefile" <<MK
+BUILD_DIR = obj
+include \$(N64_INST)/include/n64.mk
+
+N64_C_AND_CXX_FLAGS += -I$FAUSTINC
+N64_C_AND_CXX_FLAGS += -DFAUST_N64_SR=$SR -DFAUST_N64_BUFFERS=$BUFFERS
+N64_C_AND_CXX_FLAGS += -DFAUST_N64_DSPNAME='"$BASE"'
+$( [ "$SELFTEST" -eq 1 ] && echo "N64_C_AND_CXX_FLAGS += -DFAUST_N64_SELFTEST" )
+# Faust emits plenty of dead intermediates in unusual shapes; they are not bugs.
+N64_C_AND_CXX_FLAGS += -Wno-error=unused-but-set-variable -Wno-error=float-equal
+
+all: $IDENT.z64
+.PHONY: all
+
+OBJS = \$(BUILD_DIR)/$IDENT.o
+\$(BUILD_DIR)/$IDENT.elf: \$(OBJS)
+$IDENT.z64: N64_ROM_TITLE = "$TITLE"
+MK
+
+make -C "$BUILD" -s
+
+mkdir -p "$(dirname "$OUT")"
+cp "$BUILD/$IDENT.z64" "$OUT"
+SIZE=$(wc -c < "$OUT" | tr -d ' ')
+echo "faust2n64: wrote $OUT ($SIZE bytes)"
+[ "$KEEP" -eq 1 ] && echo "faust2n64: build kept in $BUILD" || rm -rf "$BUILD"
+exit 0
