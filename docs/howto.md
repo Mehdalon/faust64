@@ -9,8 +9,9 @@ Commands are run from the top folder of this repository.
 | everything | [Faust](https://faust.grame.fr/downloads/) 2.x (the C backend), `python3`, a C compiler (`cc`), `bash` | `faust --version`, `cc --version` |
 | Nintendo 64 | the [libdragon](https://github.com/DragonMinded/libdragon) toolchain; `faust2n64` looks in `$N64_INST` (default `~/n64-toolchain`) | `ls $N64_INST/include/n64.mk` |
 | GameCube / Wii | [devkitPro](https://devkitpro.org/wiki/Getting_Started) with devkitPPC and libogc; `faust2gc` looks in `$DEVKITPRO` (default `/opt/devkitpro`) | `ls /opt/devkitpro/devkitPPC` |
+| MS-DOS | the [DJGPP](https://www.delorie.com/djgpp/) cross-compiler (`i586-pc-msdosdjgpp-gcc`; prebuilt for macOS/Linux: [build-djgpp](https://github.com/andrewwutw/build-djgpp/releases)); `faust2dos` looks on the PATH, then in `$DJGPP_PREFIX` (default `~/djgpp`) | `i586-pc-msdosdjgpp-gcc --version` |
 | ZX Spectrum, Game Boy | nothing more: the sound is rendered on your computer | |
-| playing the ROMs | an emulator per console: [ares](https://ares-emu.net) (N64), [Dolphin](https://dolphin-emu.org) (GameCube/Wii), [SameBoy](https://sameboy.github.io) (Game Boy), [Fuse](https://fuse-emulator.sourceforge.net) or Spectral (ZX) | |
+| playing the ROMs | an emulator per console: [ares](https://ares-emu.net) (N64), [Dolphin](https://dolphin-emu.org) (GameCube/Wii), [SameBoy](https://sameboy.github.io) (Game Boy), [Fuse](https://fuse-emulator.sourceforge.net) or Spectral (ZX), [DOSBox Staging](https://www.dosbox-staging.org) (MS-DOS) | |
 
 If `faust` is not on your PATH, or you want a particular build, point to it:
 `export FAUST=/path/to/faust`. Every script here uses `$FAUST` when it is set.
@@ -32,11 +33,12 @@ whether you hear lag and crackle):
 | `roms/demo.z64` | N64 | `game/faust64.h` in a small game: Faust music, and Faust sound effects on A (jump), B, START, Z, L, R; the d-pad moves |
 | `roms/chip.gb` | Game Boy | a two-voice tune written for the Game Boy's 3-bit output - no added noise |
 | `roms/acid.gb`, `roms/hardkick.gb` | Game Boy | the N64 demos at 8192 Hz, 3-bit: you hear the dither noise |
+| `roms/acid.exe`, `roms/hardkick.exe`, `roms/chip.exe` | MS-DOS | the same programs live on a PC with a Sound Blaster 16; the faders on a VGA screen (arrow keys, Space, R resets, Esc quits) |
 | `roms/gb-tunnel.gb`, `roms/gb-plasma.gb` | Game Boy | **pictures and sound, both from Faust**: a tunnel / a plasma drawn by a Faust program, the tune from another, and the picture rippling on every beat |
 
 `tools/play.sh FILE` starts the right emulator on macOS (ares, Dolphin, SameBoy,
-Spectral) with the settings in emulators.md; set `ARES=`, `DOLPHIN=`, `SAMEBOY=`
-to other paths.
+Spectral, DOSBox Staging) with the settings in emulators.md; set `ARES=`,
+`DOLPHIN=`, `SAMEBOY=`, `DOSBOX=` to other paths.
 
 ## 3. Hear a program before building anything
 
@@ -56,6 +58,7 @@ is what those consoles get, before the 3- or 5-bit step.
 ```bash
 ./faust2n64 demos/acid.dsp      # -> demos/acid.z64
 ./faust2gc  demos/acid.dsp      # -> demos/acid.dol          (--wii for a Wii build)
+./faust2dos demos/acid.dsp      # -> demos/acid.exe          (MS-DOS; -r 11025 for slow PCs)
 ./faust2zx  demos/acid.dsp      # -> demos/acid.tap + demos/acid-preview.wav
 ./faust2gb  demos/chip.dsp      # -> demos/chip.gb  + demos/chip-preview.wav
 ./faust2gb -d 20 -v gb/vis/tunnel.dsp gb/vis/chipwave.dsp   # -> gb/vis/chipwave.gb, sound + pictures
@@ -66,6 +69,14 @@ What each prints, and what to look for:
 - **faust2n64 / faust2gc** end with `wrote demos/acid.z64 (... bytes)`. Every
   `hslider`/`vslider`/`button`/`checkbox` in the program becomes a control on screen.
   `faust2n64 -b 2` makes the sound react faster to the controls (see emulators.md).
+- **faust2dos** ends with `wrote demos/acid.exe (... bytes, 22050 Hz)`. One file:
+  the DOS extender's helper (CWSDPMI) is built in. DOS names have at most 8
+  characters, so `frenchcore.dsp` becomes `frenchco.exe`. `-r 11025` halves the
+  CPU cost for slow PCs; `-b` sets the buffer (default 1024 frames per half,
+  46 ms). `faust2dos -S x.dsp` builds a self-test that prints a fingerprint of
+  the first 4096 samples, to compare with `tools/selftest.sh x.dsp` on your computer.
+  In DOS, `set FAUSTDOS_TEST=5` before starting a program makes it play 5 s and
+  write `TEST.TXT` (measured sample rate, CPU load, late buffers) and `SCREEN.PPM`.
 - **faust2zx / faust2gb** render on your computer, then run the ROM's player on a
   model of the CPU (`zx/simulate.py`, `gb/simulate.py`) and print how close the
   console's sound is to the render: `correlation` (1 = identical) and `SNR` (dB,
@@ -159,6 +170,7 @@ the half of video memory not on screen, then shown. Details in `gb/mkgbv.py`.
 ## 7. Real hardware
 
 - **N64:** a flash cart (SummerCart64, EverDrive 64) takes the `.z64` as it is.
+- **MS-DOS:** copy the `.exe` to a PC with a Sound Blaster 16 (or compatible), `SET BLASTER=A220 I5 D1 H5 T6` as your card is set, run it. A 486DX at 66 MHz is about the minimum for most programs at 11025 Hz (estimated in DOSBox, see emulators.md).
 - **GameCube / Wii:** a `.dol` via Swiss (GameCube) or the Homebrew Channel (Wii).
 - **ZX Spectrum:** `python3 zx/tap2wav.py demos/acid.tap acid-tape.wav`, play it into the EAR socket, `LOAD ""`.
 - **Game Boy:** any flash cart with MBC5 support (EverDrive GB, EZ-Flash Junior).
@@ -173,6 +185,9 @@ with what happened.
 | `faust compiler not found` | install Faust, or `export FAUST=/path/to/faust` |
 | `no libdragon toolchain at N64_INST=...` | install libdragon, `export N64_INST=/its/folder` |
 | `no devkitPPC at ...` | install devkitPro's `gamecube-dev` (or `wii-dev`), or set `DEVKITPRO` |
+| `no DJGPP compiler` | install DJGPP, put its `bin` on PATH or set `DJGPP_PREFIX` |
+| DOS: `no Sound Blaster at 220h` | in DOSBox set `sbtype=sb16`; on a PC set `BLASTER` to your card's settings |
+| DOS: `Bad command or file name` for a long name | DOS names are 8 characters: `frenchcore.dsp` is `frenchco.exe` |
 | a Game Boy / ZX build sounds like noise | the program is quiet or full of noise - see the rules in section 5; compare with `lab/faustlab -r 8192` |
 | `correlation` well below 0.9 | the same: the console's few levels cannot carry this sound |
 | clicks or stutter in an emulator | [emulators.md](emulators.md): let the audio pace the emulator |

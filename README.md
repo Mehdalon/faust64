@@ -1,4 +1,4 @@
-# faust64 - Faust for game consoles
+# faust64 - Faust for game consoles and MS-DOS
 
 Compile a [Faust](https://faust.grame.fr) `.dsp` file for old game hardware:
 
@@ -6,12 +6,14 @@ Compile a [Faust](https://faust.grame.fr) `.dsp` file for old game hardware:
 |---|---|---|
 | **Nintendo 64** - `faust2n64` | the DSP runs live on the console (the VR4300 has an FPU); every Faust control becomes a fader on screen, played with the controller | 22050 Hz stereo |
 | **GameCube / Wii** - `faust2gc` | live, through libogc's audio | 48000 Hz stereo |
+| **MS-DOS** - `faust2dos` | live on the PC (32-bit DJGPP, x87 FPU), through a Sound Blaster 16; every control a fader on a VGA screen, played with the keyboard - the N64 interface code, unchanged | 22050 Hz stereo, 16-bit |
 | **ZX Spectrum** - `faust2zx` | rendered on your computer, played back by a 33-byte player that toggles the 1-bit speaker | 6986 Hz, 5-bit PWM |
 | **Game Boy** - `faust2gb` | rendered on your computer, streamed by a hand-assembled player through the master volume register, from an MBC5 cartridge. With `-v`, a second Faust program draws the pictures: 128 x 88, 4 shades, 29.86 a second, plus per-line raster effects from the sound program | 8192 Hz, 3-bit PCM (9198 Hz with pictures) |
 
 ```bash
 ./faust2n64 demos/acid.dsp        # -> demos/acid.z64   (needs libdragon, $N64_INST)
 ./faust2gc  demos/acid.dsp        # -> demos/acid.dol   (needs devkitPro)
+./faust2dos demos/acid.dsp        # -> demos/acid.exe   (needs DJGPP; run it in DOSBox)
 ./faust2zx  demos/acid.dsp        # -> demos/acid.tap + acid-preview.wav
 ./faust2gb  demos/chip.dsp        # -> demos/chip.gb  + chip-preview.wav
 ./faust2gb -d 20 -v gb/vis/tunnel.dsp gb/vis/chipwave.dsp   # Game Boy: pictures + sound, both Faust

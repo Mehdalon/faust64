@@ -6,13 +6,14 @@
 #   tools/play.sh zx/out/acid.tap       ZX Spectrum   -> Spectral
 #   tools/play.sh examples/sine.dol     GameCube/Wii  -> Dolphin
 #   tools/play.sh demos/chip.gb         Game Boy      -> SameBoy
+#   tools/play.sh demos/acid.exe        MS-DOS        -> DOSBox (dosbox-staging)
 #
-# Env overrides:  ARES=  SPECTRAL=  DOLPHIN=  SAMEBOY=  LATENCY=  KEEP=1 (don't kill
+# Env overrides:  ARES=  SPECTRAL=  DOLPHIN=  SAMEBOY=  DOSBOX=  CYCLES=  LATENCY=  KEEP=1 (don't kill
 # a running instance)  DRY=1 (print the command and exit)
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-FILE="${1:?usage: play.sh FILE.[z64|tap|tzx|sna|z80|dol|elf|gb]}"
+FILE="${1:?usage: play.sh FILE.[z64|tap|tzx|sna|z80|dol|elf|gb|exe]}"
 [ -f "$FILE" ] || { echo "play.sh: no such file: $FILE" >&2; exit 1; }
 shift || true
 FILE="$(cd "$(dirname "$FILE")" && pwd)/$(basename "$FILE")"   # absolute
@@ -22,6 +23,7 @@ SPECTRAL="${SPECTRAL:-/Applications/Spectral.app}"
 DOLPHIN="${DOLPHIN:-/Applications/Dolphin.app/Contents/MacOS/Dolphin}"
 LATENCY="${LATENCY:-80}"
 SAMEBOY="${SAMEBOY:-/Applications/SameBoy.app}"
+DOSBOX="${DOSBOX:-dosbox-staging}"
 
 run() {
     if [ "${DRY:-0}" = 1 ]; then printf '%q ' "$@"; echo; exit 0; fi
@@ -94,9 +96,21 @@ gb|gbc)
          run "$SAMEBOY" "$FILE"; fi
     ;;
 
+exe|EXE)
+    # ---- MS-DOS, via dosbox-staging: a Sound Blaster 16 at A220 I7 D1 H5, the
+    # file's folder as C:, the program started at once. CYCLES: emulated CPU
+    # speed (default max - the fastest this Mac can emulate).
+    command -v "$DOSBOX" >/dev/null || { echo "play.sh: no DOSBox ($DOSBOX); brew install dosbox-staging" >&2; exit 1; }
+    D="$(dirname "$FILE")"; P="$(basename "$FILE")"
+    run "$DOSBOX" --noprimaryconf --nolocalconf \
+        --set sbtype=sb16 --set sbbase=220 --set irq=7 --set dma=1 --set hdma=5 \
+        --set "cpu_cycles=${CYCLES:-max}" \
+        -c "mount c \"$D\"" -c "c:" -c "$P" "$@"
+    ;;
+
 *)
     echo "play.sh: don't know how to run '${FILE##*.}'" >&2
-    echo "         known: z64 n64 v64 | tap tzx pzx csw sna z80 szx | dol elf gcm iso | gb" >&2
+    echo "         known: z64 n64 v64 | tap tzx pzx csw sna z80 szx | dol elf gcm iso | gb | exe" >&2
     exit 2
     ;;
 esac

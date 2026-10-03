@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# faust2dos - compile a Faust DSP into an MS-DOS program (.exe).
+#
+#   ./faust2dos demos/acid.dsp          -> demos/acid.exe
+#   ./faust2dos -r 44100 demos/fm.dsp
+#   ./faust2dos -S examples/bass.dsp    -> self-test build (prints sum/min/max, compare tools/selftest.sh)
+#
+# The DSP runs live on the PC: 32-bit protected mode (DJGPP), the x87 FPU,
+# sound through a Sound Blaster 16, every control a fader on a VGA screen
+# (the N64 build's interface code, ui/faustgui.h, via dos/libdragon.h).
+# One file: the DPMI host CWSDPMI is built into the .exe (dos/CWSDSTUB.EXE).
+# Needs: faust, and the DJGPP cross-compiler (i586-pc-msdosdjgpp-gcc) on PATH
+# or in $DJGPP_PREFIX (default ~/djgpp). Run it in DOSBox (tools/play.sh x.exe).
+set -euo pipefail
+HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+FAUST="${FAUST:-faust}"
+OUT=""; SR=22050; HALF=1024; SELF=0
+usage() { echo "usage: faust2dos [-o out.exe] [-r rate] [-b frames] [-S] file.dsp" >&2; exit 2; }
+while getopts ":o:r:b:Sh" opt; do
+    case "$opt" in o) OUT="$OPTARG" ;; r) SR="$OPTARG" ;; b) HALF="$OPTARG" ;; S) SELF=1 ;; *) usage ;; esac
+done
+shift $((OPTIND - 1)); [ $# -eq 1 ] || usage
+DSP="$1"; [ -f "$DSP" ] || { echo "faust2dos: no such file: $DSP" >&2; exit 1; }
+command -v "$FAUST" >/dev/null || { echo "faust2dos: faust compiler not found ($FAUST); install Faust or set FAUST=/path/to/faust" >&2; exit 1; }
+DJGPP_PREFIX="${DJGPP_PREFIX:-$HOME/djgpp}"
+CC=i586-pc-msdosdjgpp-gcc
+command -v "$CC" >/dev/null || CC="$DJGPP_PREFIX/bin/i586-pc-msdosdjgpp-gcc"
+[ -x "$CC" ] || command -v "$CC" >/dev/null || { echo "faust2dos: no DJGPP compiler (i586-pc-msdosdjgpp-gcc); set DJGPP_PREFIX" >&2; exit 1; }
+EXE2COFF="$(dirname "$(command -v "$CC" || echo "$CC")")/i586-pc-msdosdjgpp-exe2coff"
+[ -x "$EXE2COFF" ] || EXE2COFF="$(dirname "$(command -v "$CC" || echo "$CC")")/../i586-pc-msdosdjgpp/bin/exe2coff"
+BASE="$(basename "$DSP" .dsp)"; SUF=""; [ $SELF = 0 ] || SUF=-st
+# DOS names: 8 characters + .exe (frenchcore -> frenchco.exe; self-test: bass-st.exe)
+N8="$(printf '%s' "$BASE" | tr -c 'A-Za-z0-9_\n-' '_' | cut -c1-$((8 - ${#SUF})))$SUF"
+[ -n "$OUT" ] || OUT="$(dirname "$DSP")/$N8.exe"
+W="$HERE/build/dos-$BASE"; rm -rf "$W"; mkdir -p "$W"
+FI="$("$FAUST" --includedir 2>/dev/null || true)"
+[ -n "$FI" ] && [ -f "$FI/faust/gui/CInterface.h" ] || FI="$(cd "$(dirname "$(command -v "$FAUST")")/../.." 2>/dev/null && pwd)/architecture"
+[ -f "$FI/faust/gui/CInterface.h" ] || FI=/usr/local/include
+[ -f "$FI/faust/gui/CInterface.h" ] || { echo "faust2dos: CInterface.h not found (faust --includedir)" >&2; exit 1; }
+"$FAUST" -I "$HERE/lib" -lang c -ftz 1 -cn mydsp -o "$W/gen.c" "$DSP"
+DEFS=(-DFAUST_DOS_SR="$SR" -DFAUST_DOS_HALF="$HALF" -DFAUST_DOS_DSPNAME="\"$BASE\"")
+[ $SELF = 1 ] && DEFS+=(-DFAUST_DOS_SELFTEST)
+"$CC" -O2 -ffast-math -march=i586 -w "${DEFS[@]}" -I"$FI" -I"$HERE/dos" -I"$HERE/ui" \
+    -include faust/gui/CInterface.h -include "$W/gen.c" "$HERE/arch/dos.c" -lm -o "$W/prog.exe"
+"$EXE2COFF" "$W/prog.exe"                      # -> $W/prog: the program without the go32 stub
+cat "$HERE/dos/CWSDSTUB.EXE" "$W/prog" > "$OUT"   # stub with CWSDPMI built in: one self-contained .exe
+echo "faust2dos: wrote $OUT ($(wc -c < "$OUT" | tr -d ' ') bytes, $SR Hz${SUF:+, self-test})"

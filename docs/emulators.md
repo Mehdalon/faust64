@@ -63,6 +63,26 @@ General advice:
 | Config > General > dual core | on | |
 | Graphics > VSync | off | audio leads |
 
+## MS-DOS - DOSBox Staging
+
+[DOSBox Staging](https://www.dosbox-staging.org) 0.83 **(here)**: `tools/play.sh demos/acid.exe`
+mounts the folder as C:, sets up a Sound Blaster 16 (A220 I7 D1 H5 - DOSBox sets
+`BLASTER` itself) and starts the program. By hand: `sbtype = sb16` in the
+`[sblaster]` section; the program reads `BLASTER`.
+
+Measured **(here)**, every demo, `FAUSTDOS_TEST=4`, `cpu_cycles = max`: the card
+takes the sound at 22016 Hz over 4 s (22050 set; the gap is the start-up), 0
+late buffers, peak CPU load 4-17%. With 512 frames per half buffer there was a
+late buffer now and then, so the default is 1024 (46 ms).
+
+**Slower PCs.** `cpu_cycles = 26800` (about a 486DX2-66 - an estimate, not a
+real machine): `bass` 16% CPU, `maxout` 82% with 5 late buffers in 6 s, `arp`
+96% with 81 late - too slow at 22050 Hz. `arp` built with `-r 11025`: 48%, 0 late.
+At `cpu_cycles = 60000` all three fit (7-43%).
+
+Lag: the sound runs about one to two half buffers (46-93 ms) behind a key press
+at the default buffer; `faust2dos -b 512` halves that, at the risk above.
+
 ## ZX Spectrum
 
 Not run in an emulator here. `faust2zx` is checked by `zx/simulate.py` instead

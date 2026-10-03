@@ -9,3 +9,6 @@ demos/*.dol
 game/*.z64
 gb/vis/*.gb
 synth/
+demos/*.exe
+examples/*.exe
+game/*.exe
